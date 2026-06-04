@@ -1,0 +1,80 @@
+# Core Data & Analysis
+pandas==2.0.3
+numpy==1.24.3
+scipy==1.11.1
+
+# Machine Learning & Deep Learning
+scikit-learn==1.3.0
+tensorflow==2.13.0
+torch==2.0.1
+pytorch-lightning==2.0.4
+
+# Backtesting Frameworks
+zipline-reloaded==2.3.0
+backtrader==1.9.94.122
+
+# Financial Data & APIs
+yfinance==0.2.28
+pandas-datareader==0.10.0
+quandl==3.7.0
+ccxt==2.45.29
+alpaca-trade-api==2.10.0
+oanda-api==0.2.0
+pandas-ta==0.3.14b0
+
+# NLP & Sentiment Analysis
+spacy==3.6.0
+transformers==4.30.2
+textblob==0.17.1
+nltk==3.8.1
+
+# Web Framework & APIs
+flask==2.3.2
+fastapi==0.100.0
+uvicorn==0.23.1
+requests==2.31.0
+aiohttp==3.8.5
+
+# Database
+sqlalchemy==2.0.19
+psycopg2-binary==2.9.6
+pymongo==4.4.1
+
+# Visualization
+plotly==5.15.0
+matplotlib==3.7.2
+seaborn==0.12.2
+dash==2.14.0
+
+# Utilities & Configuration
+python-dotenv==1.0.0
+pyyaml==6.0
+loguru==0.7.0
+tqdm==4.65.0
+
+# Testing
+pytest==7.4.0
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+
+# Code Quality
+black==23.7.0
+flake8==6.0.0
+pylint==2.17.5
+mypy==1.4.1
+
+# Sports & Betting APIs
+requests-mock==1.11.0
+
+# Crypto & Blockchain
+web3==6.9.0
+eth-account==0.9.5
+
+# Scheduling & Async
+schedule==1.2.0
+celery==5.3.1
+redis==5.0.0
+
+# Documentation
+sphinx==7.1.2
+sphinx-rtd-theme==1.3.0
