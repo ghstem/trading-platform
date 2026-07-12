@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -52,7 +52,7 @@ class PortfolioSnapshot(Base):
     __tablename__ = "portfolio_snapshots"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     total_equity = Column(Float, nullable=False)
     cash = Column(Float, nullable=False)
     positions_value = Column(Float, nullable=False)
@@ -75,7 +75,7 @@ class TradeRecord(Base):
     fill_price = Column(Float, nullable=False)
     commission = Column(Float, nullable=False, default=0.0)
     status = Column(String(32), nullable=False)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
     filled_at = Column(DateTime, nullable=True)
 
 
@@ -85,7 +85,7 @@ class SignalRecord(Base):
     __tablename__ = "signal_records"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     strategy_name = Column(String(128), nullable=False)
     symbol = Column(String(32), nullable=False)
     signal_type = Column(String(16), nullable=False)
@@ -100,7 +100,7 @@ class EquityCurvePoint(Base):
     __tablename__ = "equity_curve"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    timestamp = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc), index=True)
     total_equity = Column(Float, nullable=False)
     cash = Column(Float, nullable=False)
     total_pnl = Column(Float, nullable=False)
@@ -161,7 +161,7 @@ class PersistenceManager:
             }
 
         row = PortfolioSnapshot(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             total_equity=summary["total_equity"],
             cash=summary["cash"],
             positions_value=summary["positions_value"],
@@ -264,7 +264,7 @@ class PersistenceManager:
     def save_signal(self, signal, timestamp: Optional[datetime] = None) -> None:
         """Persist a strategy signal."""
         row = SignalRecord(
-            timestamp=timestamp or datetime.utcnow(),
+            timestamp=timestamp or datetime.now(timezone.utc),
             strategy_name=signal.strategy_name,
             symbol=signal.asset.symbol,
             signal_type=signal.signal_type.value,
@@ -282,7 +282,7 @@ class PersistenceManager:
     def record_equity(self, portfolio: Portfolio) -> None:
         """Append a data-point to the equity curve."""
         row = EquityCurvePoint(
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
             total_equity=portfolio.total_equity,
             cash=portfolio.cash,
             total_pnl=portfolio.total_pnl,

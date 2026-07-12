@@ -12,7 +12,7 @@ import asyncio
 import time
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -153,7 +153,7 @@ async def lifespan(app: FastAPI):
     global _portfolio, _risk_manager, _strategy_manager, _persistence
 
     logger.info("Starting Trading Platform API…")
-    _metrics["start_time"] = datetime.utcnow().isoformat()
+    _metrics["start_time"] = datetime.now(timezone.utc).isoformat()
 
     # Persistence
     _persistence = PersistenceManager(settings.DATABASE_URL)
@@ -956,7 +956,7 @@ def metrics():
     uptime_seconds: float = 0.0
     if _metrics["start_time"]:
         start = datetime.fromisoformat(_metrics["start_time"])
-        uptime_seconds = (datetime.utcnow() - start).total_seconds()
+        uptime_seconds = (datetime.now(timezone.utc) - start).total_seconds()
 
     port = _portfolio
     return {
