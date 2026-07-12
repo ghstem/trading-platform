@@ -332,7 +332,14 @@ class OptionsDataProvider(MarketDataProvider):
         Parse ``"UNDERLYING_YYYY-MM-DD_TYPE_STRIKE"`` into a 4-tuple
         ``(underlying, expiry_str, option_type, strike)``.
 
-        Returns ``None`` if the symbol cannot be parsed.
+        Returns ``None`` if the symbol cannot be parsed.  Reasons for failure:
+
+        * Not exactly 4 underscore-separated parts.
+        * ``TYPE`` is not ``"C"`` or ``"P"`` (case-insensitive).
+        * ``STRIKE`` is not a valid number (e.g. ``"abc"``).
+
+        Examples of valid symbols: ``"AAPL_2024-01-19_C_150"``,
+        ``"SPY_2024-06-21_P_450.5"``.
         """
         try:
             parts = symbol.split("_")
@@ -375,6 +382,14 @@ class OptionsDataProvider(MarketDataProvider):
             if match.empty:
                 # Nearest strike fallback
                 idx = (contracts['strike'] - strike).abs().idxmin()
+                nearest = contracts.loc[idx, 'strike']
+                distance_pct = abs(nearest - strike) / strike * 100 if strike != 0 else float('inf')
+                if distance_pct > 5:
+                    logger.warning(
+                        f"Exact strike {strike} not found for {symbol}; "
+                        f"falling back to nearest strike {nearest} "
+                        f"({distance_pct:.1f}% away)"
+                    )
                 match = contracts.loc[[idx]]
             row = match.iloc[0]
             last = float(row.get('lastPrice', 0) or 0)

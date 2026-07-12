@@ -55,7 +55,19 @@ class OptionType(Enum):
 
 @dataclass
 class Asset:
-    """Represents a tradable asset"""
+    """Represents a tradable asset.
+
+    For stocks and crypto, only ``symbol``, ``asset_class``, ``exchange``,
+    ``currency``, and ``multiplier`` are required.
+
+    For **futures**, ``expiry`` (a :class:`datetime.date`) and ``multiplier``
+    (contract size) should be set so that two contracts with different
+    expiries are treated as distinct assets.
+
+    For **options**, ``expiry`` (a :class:`datetime.date`), ``strike``, and
+    ``option_type`` (:class:`OptionType`) are required to uniquely identify
+    a contract.  All three are included in the hash/equality check.
+    """
     symbol: str
     asset_class: AssetClass
     exchange: str
