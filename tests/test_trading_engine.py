@@ -3,9 +3,10 @@ Unit tests for core trading engine
 """
 import pytest
 import numpy as np
+from datetime import date
 
 from core.trading_engine import (
-    Asset, AssetClass, Order, OrderSide, OrderStatus, OrderType,
+    Asset, AssetClass, OptionType, Order, OrderSide, OrderStatus, OrderType,
     Position, Portfolio,
 )
 
@@ -42,6 +43,66 @@ class TestAsset:
     def test_different_exchange_not_equal(self, apple):
         nyse = Asset(symbol="AAPL", asset_class=AssetClass.STOCK, exchange="NYSE")
         assert apple != nyse
+
+    def test_forex_asset(self):
+        eur = Asset(symbol="EURUSD", asset_class=AssetClass.FOREX, exchange="FOREX")
+        assert eur.asset_class == AssetClass.FOREX
+        assert eur.expiry is None
+        assert eur.strike is None
+        assert eur.option_type is None
+
+    def test_futures_asset(self):
+        es = Asset(
+            symbol="ES",
+            asset_class=AssetClass.FUTURE,
+            exchange="CME",
+            expiry=date(2024, 12, 20),
+            multiplier=50.0,
+        )
+        assert es.expiry == date(2024, 12, 20)
+        assert es.multiplier == 50.0
+
+    def test_futures_assets_differ_by_expiry(self):
+        es_dec = Asset("ES", AssetClass.FUTURE, "CME", expiry=date(2024, 12, 20))
+        es_mar = Asset("ES", AssetClass.FUTURE, "CME", expiry=date(2025, 3, 21))
+        assert es_dec != es_mar
+        assert hash(es_dec) != hash(es_mar)
+
+    def test_option_call_asset(self):
+        call = Asset(
+            symbol="AAPL",
+            asset_class=AssetClass.OPTION,
+            exchange="CBOE",
+            expiry=date(2024, 1, 19),
+            strike=150.0,
+            option_type=OptionType.CALL,
+        )
+        assert call.option_type == OptionType.CALL
+        assert call.strike == 150.0
+        assert call.expiry == date(2024, 1, 19)
+
+    def test_option_put_asset(self):
+        put = Asset(
+            symbol="AAPL",
+            asset_class=AssetClass.OPTION,
+            exchange="CBOE",
+            expiry=date(2024, 1, 19),
+            strike=150.0,
+            option_type=OptionType.PUT,
+        )
+        assert put.option_type == OptionType.PUT
+
+    def test_call_and_put_not_equal(self):
+        call = Asset("AAPL", AssetClass.OPTION, "CBOE",
+                     expiry=date(2024, 1, 19), strike=150.0, option_type=OptionType.CALL)
+        put = Asset("AAPL", AssetClass.OPTION, "CBOE",
+                    expiry=date(2024, 1, 19), strike=150.0, option_type=OptionType.PUT)
+        assert call != put
+        assert hash(call) != hash(put)
+
+    def test_option_type_enum_values(self):
+        assert OptionType.CALL.value == "CALL"
+        assert OptionType.PUT.value == "PUT"
 
 
 # ---------------------------------------------------------------------------

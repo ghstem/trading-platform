@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch, PropertyMock
+from collections import namedtuple
 
 from core.trading_engine import Asset, AssetClass
 from data_pipeline.market_data import (
@@ -16,6 +17,8 @@ from data_pipeline.market_data import (
     YahooFinanceProvider,
     CryptoDataProvider,
     ForexDataProvider,
+    FuturesDataProvider,
+    OptionsDataProvider,
     get_market_data_manager,
 )
 
@@ -192,6 +195,34 @@ class TestMarketDataManagerProviderDispatch:
         assert "AAPL" in prices
         assert "MSFT" in prices
 
+    def test_forex_uses_forex_provider(self):
+        mgr = self._make_mgr()
+        mock_forex = MagicMock()
+        mock_forex.fetch_ohlcv.return_value = _make_ohlcv()
+        mgr.providers["forex"] = mock_forex
+        asset = _make_asset("EURUSD", AssetClass.FOREX)
+        mgr.fetch_ohlcv(asset, use_cache=False)
+        mock_forex.fetch_ohlcv.assert_called_once()
+
+    def test_future_uses_futures_provider(self):
+        mgr = self._make_mgr()
+        mock_futures = MagicMock()
+        mock_futures.fetch_ohlcv.return_value = _make_ohlcv()
+        mgr.providers["futures"] = mock_futures
+        asset = _make_asset("ES", AssetClass.FUTURE)
+        mgr.fetch_ohlcv(asset, use_cache=False)
+        mock_futures.fetch_ohlcv.assert_called_once()
+
+    def test_option_uses_options_provider(self):
+        mgr = self._make_mgr()
+        mock_options = MagicMock()
+        mock_options.fetch_current_price.return_value = 5.0
+        mock_options.fetch_ohlcv.return_value = pd.DataFrame()
+        mgr.providers["options"] = mock_options
+        asset = _make_asset("AAPL_2024-01-19_C_150", AssetClass.OPTION)
+        mgr.fetch_current_price(asset, use_cache=False)
+        mock_options.fetch_current_price.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # YahooFinanceProvider
@@ -244,24 +275,217 @@ class TestYahooFinanceProvider:
 
 
 # ---------------------------------------------------------------------------
-# ForexDataProvider (placeholder)
+# ForexDataProvider
 # ---------------------------------------------------------------------------
 
 class TestForexDataProvider:
-    def test_fetch_ohlcv_returns_empty(self):
+    def test_to_yf_symbol_appends_suffix(self):
+        assert ForexDataProvider._to_yf_symbol("EURUSD") == "EURUSD=X"
+
+    def test_to_yf_symbol_preserves_existing_suffix(self):
+        assert ForexDataProvider._to_yf_symbol("GBPUSD=X") == "GBPUSD=X"
+
+    def test_fetch_ohlcv_returns_df_on_success(self):
         provider = ForexDataProvider()
-        result = provider.fetch_ohlcv("EURUSD")
+        mock_ticker = MagicMock()
+        history_df = _make_ohlcv()
+        history_df.index.name = "timestamp"
+        mock_ticker.history.return_value = history_df
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            result = provider.fetch_ohlcv("EURUSD", timeframe="1d", limit=20)
+        assert isinstance(result, pd.DataFrame)
+        assert not result.empty
+
+    def test_fetch_ohlcv_returns_empty_on_error(self):
+        provider = ForexDataProvider()
+        with patch("data_pipeline.market_data.yf.Ticker", side_effect=Exception("fail")):
+            result = provider.fetch_ohlcv("EURUSD")
         assert result.empty
 
-    def test_fetch_current_price_returns_zero(self):
+    def test_fetch_ohlcv_returns_empty_when_no_data(self):
         provider = ForexDataProvider()
-        price = provider.fetch_current_price("EURUSD")
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame()
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            result = provider.fetch_ohlcv("EURUSD")
+        assert result.empty
+
+    def test_fetch_current_price_returns_float(self):
+        provider = ForexDataProvider()
+        mock_ticker = MagicMock()
+        mock_ticker.info = {"regularMarketPrice": 1.08}
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            price = provider.fetch_current_price("EURUSD")
+        assert isinstance(price, float)
+        assert price == pytest.approx(1.08)
+
+    def test_fetch_current_price_returns_zero_on_error(self):
+        provider = ForexDataProvider()
+        with patch("data_pipeline.market_data.yf.Ticker", side_effect=Exception("network")):
+            price = provider.fetch_current_price("EURUSD")
         assert price == 0.0
 
-    def test_fetch_multiple_prices_all_zero(self):
+    def test_fetch_multiple_prices(self):
         provider = ForexDataProvider()
-        prices = provider.fetch_multiple_prices(["EURUSD", "GBPUSD"])
-        assert prices == {"EURUSD": 0.0, "GBPUSD": 0.0}
+        mock_ticker = MagicMock()
+        mock_ticker.info = {"regularMarketPrice": 1.08}
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            prices = provider.fetch_multiple_prices(["EURUSD", "GBPUSD"])
+        assert set(prices.keys()) == {"EURUSD", "GBPUSD"}
+
+
+# ---------------------------------------------------------------------------
+# FuturesDataProvider
+# ---------------------------------------------------------------------------
+
+class TestFuturesDataProvider:
+    def test_to_yf_symbol_appends_suffix(self):
+        assert FuturesDataProvider._to_yf_symbol("ES") == "ES=F"
+
+    def test_to_yf_symbol_preserves_existing_suffix(self):
+        assert FuturesDataProvider._to_yf_symbol("NQ=F") == "NQ=F"
+
+    def test_fetch_ohlcv_returns_df_on_success(self):
+        provider = FuturesDataProvider()
+        mock_ticker = MagicMock()
+        history_df = _make_ohlcv()
+        history_df.index.name = "timestamp"
+        mock_ticker.history.return_value = history_df
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            result = provider.fetch_ohlcv("ES", timeframe="1d", limit=20)
+        assert isinstance(result, pd.DataFrame)
+        assert not result.empty
+
+    def test_fetch_ohlcv_returns_empty_on_error(self):
+        provider = FuturesDataProvider()
+        with patch("data_pipeline.market_data.yf.Ticker", side_effect=Exception("fail")):
+            result = provider.fetch_ohlcv("ES")
+        assert result.empty
+
+    def test_fetch_ohlcv_returns_empty_when_no_data(self):
+        provider = FuturesDataProvider()
+        mock_ticker = MagicMock()
+        mock_ticker.history.return_value = pd.DataFrame()
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            result = provider.fetch_ohlcv("ES")
+        assert result.empty
+
+    def test_fetch_current_price_returns_float(self):
+        provider = FuturesDataProvider()
+        mock_ticker = MagicMock()
+        mock_ticker.info = {"regularMarketPrice": 5200.0}
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            price = provider.fetch_current_price("ES")
+        assert price == pytest.approx(5200.0)
+
+    def test_fetch_current_price_returns_zero_on_error(self):
+        provider = FuturesDataProvider()
+        with patch("data_pipeline.market_data.yf.Ticker", side_effect=Exception("fail")):
+            price = provider.fetch_current_price("NQ")
+        assert price == 0.0
+
+    def test_fetch_multiple_prices(self):
+        provider = FuturesDataProvider()
+        mock_ticker = MagicMock()
+        mock_ticker.info = {"regularMarketPrice": 5200.0}
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            prices = provider.fetch_multiple_prices(["ES", "NQ"])
+        assert set(prices.keys()) == {"ES", "NQ"}
+
+
+# ---------------------------------------------------------------------------
+# OptionsDataProvider
+# ---------------------------------------------------------------------------
+
+# Reusable named tuple matching yfinance option_chain return value
+_OptionChain = namedtuple("OptionChain", ["calls", "puts"])
+
+
+def _make_option_chain_df(strike: float, last: float = 5.0, bid: float = 4.9, ask: float = 5.1) -> pd.DataFrame:
+    return pd.DataFrame({
+        "strike": [strike - 5, strike, strike + 5],
+        "lastPrice": [last + 1, last, last - 1],
+        "bid": [bid + 1, bid, bid - 1],
+        "ask": [ask + 1, ask, ask - 1],
+    })
+
+
+class TestOptionsDataProvider:
+    def test_parse_symbol_valid_call(self):
+        result = OptionsDataProvider._parse_symbol("AAPL_2024-01-19_C_150")
+        assert result == ("AAPL", "2024-01-19", "C", 150.0)
+
+    def test_parse_symbol_valid_put(self):
+        result = OptionsDataProvider._parse_symbol("SPY_2024-06-21_P_450.5")
+        assert result == ("SPY", "2024-06-21", "P", 450.5)
+
+    def test_parse_symbol_invalid_returns_none(self):
+        assert OptionsDataProvider._parse_symbol("AAPL") is None
+        assert OptionsDataProvider._parse_symbol("AAPL_2024-01-19_X_150") is None
+        assert OptionsDataProvider._parse_symbol("too_many_parts_here_extra") is None
+
+    def test_fetch_ohlcv_returns_empty(self):
+        provider = OptionsDataProvider()
+        result = provider.fetch_ohlcv("AAPL_2024-01-19_C_150")
+        assert result.empty
+
+    def test_fetch_current_price_exact_strike_match(self):
+        provider = OptionsDataProvider()
+        df_calls = _make_option_chain_df(strike=150.0)
+        chain = _OptionChain(calls=df_calls, puts=df_calls)
+        mock_ticker = MagicMock()
+        mock_ticker.option_chain.return_value = chain
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            price = provider.fetch_current_price("AAPL_2024-01-19_C_150")
+        assert price == pytest.approx(5.0)
+
+    def test_fetch_current_price_nearest_strike_fallback(self):
+        provider = OptionsDataProvider()
+        # Chain has strikes 145, 150, 155 — request strike 151 (nearest = 150)
+        df_calls = _make_option_chain_df(strike=150.0)
+        chain = _OptionChain(calls=df_calls, puts=df_calls)
+        mock_ticker = MagicMock()
+        mock_ticker.option_chain.return_value = chain
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            price = provider.fetch_current_price("AAPL_2024-01-19_C_151")
+        # Nearest is 150 (lastPrice=5.0)
+        assert price > 0.0
+
+    def test_fetch_current_price_mid_when_last_zero(self):
+        provider = OptionsDataProvider()
+        df_calls = pd.DataFrame({
+            "strike": [150.0],
+            "lastPrice": [0.0],
+            "bid": [4.8],
+            "ask": [5.2],
+        })
+        chain = _OptionChain(calls=df_calls, puts=df_calls)
+        mock_ticker = MagicMock()
+        mock_ticker.option_chain.return_value = chain
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            price = provider.fetch_current_price("AAPL_2024-01-19_C_150")
+        assert price == pytest.approx(5.0)  # (4.8 + 5.2) / 2
+
+    def test_fetch_current_price_returns_zero_on_bad_symbol(self):
+        provider = OptionsDataProvider()
+        price = provider.fetch_current_price("BADSYMBOL")
+        assert price == 0.0
+
+    def test_fetch_current_price_returns_zero_on_error(self):
+        provider = OptionsDataProvider()
+        with patch("data_pipeline.market_data.yf.Ticker", side_effect=Exception("fail")):
+            price = provider.fetch_current_price("AAPL_2024-01-19_C_150")
+        assert price == 0.0
+
+    def test_fetch_multiple_prices(self):
+        provider = OptionsDataProvider()
+        df_calls = _make_option_chain_df(strike=150.0)
+        chain = _OptionChain(calls=df_calls, puts=df_calls)
+        mock_ticker = MagicMock()
+        mock_ticker.option_chain.return_value = chain
+        with patch("data_pipeline.market_data.yf.Ticker", return_value=mock_ticker):
+            prices = provider.fetch_multiple_prices(["AAPL_2024-01-19_C_150", "AAPL_2024-01-19_P_150"])
+        assert len(prices) == 2
 
 
 # ---------------------------------------------------------------------------
