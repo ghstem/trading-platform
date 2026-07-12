@@ -31,7 +31,7 @@ import pandas as pd
 from loguru import logger
 
 from core.trading_engine import (
-    Asset, Order, OrderSide, OrderType, Portfolio,
+    Asset, Order, OrderSide, OrderStatus, OrderType, Portfolio,
 )
 from risk_management.risk_manager import RiskManager
 from strategies.base import BaseStrategy, Signal, SignalType
@@ -310,7 +310,7 @@ class StrategyManager:
                 valid, reason = self.risk_manager.validate_order(order)
                 if not valid:
                     logger.warning(f"[{record.instance_id}] Order rejected: {reason}")
-                    order.status = order.status.CANCELLED
+                    order.status = OrderStatus.CANCELLED
                     return None
 
             self.portfolio.execute_order(order, price, quantity)

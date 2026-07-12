@@ -292,7 +292,8 @@ def add_strategy(req: AddStrategyRequest):
     except KeyError as exc:
         raise HTTPException(404, str(exc))
     except Exception as exc:
-        raise HTTPException(400, f"Strategy creation error: {exc}")
+        logger.error(f"Strategy creation error for '{req.strategy_key}': {exc}")
+        raise HTTPException(400, "Strategy creation failed. Check server logs.")
 
     try:
         record = sm.add_strategy(
@@ -301,7 +302,8 @@ def add_strategy(req: AddStrategyRequest):
             auto_start=req.auto_start,
         )
     except Exception as exc:
-        raise HTTPException(400, str(exc))
+        logger.error(f"Strategy add error: {exc}")
+        raise HTTPException(400, "Failed to register strategy. Check server logs.")
 
     return record.to_dict()
 
@@ -489,16 +491,18 @@ def run_backtest(req: BacktestRequest):
     except KeyError as exc:
         raise HTTPException(404, str(exc))
     except Exception as exc:
-        raise HTTPException(400, f"Strategy creation error: {exc}")
+        logger.error(f"Backtest strategy creation error for '{req.strategy_key}': {exc}")
+        raise HTTPException(400, "Strategy creation failed. Check server logs.")
 
     # Set assets on strategies that need it (e.g. SMA crossover)
     strategy.set_assets(assets)
 
     # Wrap in a backtest-compatible adapter if needed
     from backtester.backtest_engine import Strategy as BtStrategy
+    from strategies.base import BaseStrategy as _BaseStrategy
 
     class _StrategyAdapter(BtStrategy):
-        def __init__(self, inner: "BaseStrategy"):  # noqa: F821
+        def __init__(self, inner: _BaseStrategy):
             super().__init__(inner.name)
             self._inner = inner
             self._inner.set_assets(assets)
@@ -538,8 +542,8 @@ def run_backtest(req: BacktestRequest):
     try:
         stats = backtester.run(assets)
     except Exception as exc:
-        logger.error(f"Backtest error: {exc}")
-        raise HTTPException(500, f"Backtest failed: {exc}")
+        logger.error(f"Backtest execution error: {exc}")
+        raise HTTPException(500, "Backtest failed. Check server logs.")
 
     return backtester.get_stats_summary()
 
