@@ -212,7 +212,9 @@ class TestRSIReversion:
     def test_buy_in_oversold_region(self):
         asset = _make_asset()
         strat = RSIReversionStrategy(period=14, oversold=30, overbought=70)
-        # Sustained down trend makes RSI go oversold
+        # Linearly declining prices (100 → 70 over 30 bars) push RSI well below the
+        # oversold threshold of 30.  The two recovering bars (72, 74) make RSI cross
+        # back above 30, which is the strategy's BUY trigger.
         prices = list(np.linspace(100, 70, 30)) + [72.0, 74.0]
         signals = _feed_prices(strat, asset, prices)
         assert isinstance(signals, list)

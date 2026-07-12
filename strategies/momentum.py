@@ -90,7 +90,7 @@ class PriceMomentumStrategy(BaseStrategy):
         if not momentums:
             return []
 
-        ranked = sorted(momentums, key=momentums.get, reverse=True)
+        ranked = sorted(momentums, key=lambda k: momentums[k], reverse=True)
         top_symbols = set(ranked[: self.top_n])
         bottom_symbols = set(ranked[-self.top_n :]) if len(ranked) >= self.top_n else set()
 

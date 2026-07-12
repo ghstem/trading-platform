@@ -154,7 +154,7 @@ class StrategyManager:
                 logger.info(f"Strategy '{instance_id}' added (not yet started).")
         except Exception as exc:
             record.state = StrategyState.ERROR
-            record.error_message = str(exc)
+            record.error_message = "Initialisation error (see server logs)"
             logger.error(f"Strategy '{instance_id}' failed to initialise: {exc}")
 
         self._rebalance_allocations()
@@ -422,7 +422,6 @@ class StrategyManager:
 
     def get_signal_log(self, limit: int = 100) -> List[Dict]:
         """Return the most recent signals (newest first)."""
-        recent = list(reversed(self._all_signals[-limit:]))
         return [
             {
                 "timestamp": ts.isoformat(),
@@ -433,8 +432,15 @@ class StrategyManager:
                 "price": round(sig.price, 4),
                 "metadata": sig.metadata,
             }
-            for ts, sig in recent
+            for ts, sig in reversed(self._all_signals[-limit:])
         ]
+
+    def get_all_strategy_assets(self) -> Dict[str, List[Asset]]:
+        """Return a mapping of instance_id → assets for all registered strategies."""
+        return {
+            iid: list(record.strategy.assets)
+            for iid, record in self._records.items()
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers

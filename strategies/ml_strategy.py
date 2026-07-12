@@ -92,8 +92,8 @@ class MLAlphaStrategy(BaseStrategy):
 
     def _build_ohlcv(self, symbol: str) -> pd.DataFrame:
         prices = self._price_history.get(symbol, [])
-        fallback_vol = prices[-1] if prices else 0.0
-        volumes = self._volume_history.get(symbol, [fallback_vol] * len(prices))  # fallback
+        fallback_vol = 1.0  # neutral volume placeholder when no volume data is available
+        volumes = self._volume_history.get(symbol, [fallback_vol] * len(prices))
         n = min(len(prices), len(volumes))
         return pd.DataFrame({
             "open": prices[-n:],

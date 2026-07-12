@@ -26,7 +26,8 @@ from core.strategy_manager import StrategyManager, StrategyState
 from data_pipeline.market_data import get_market_data_manager
 from risk_management.risk_manager import RiskLimits, RiskManager
 from strategies.registry import get_registry
-from backtester.backtest_engine import Backtester, BacktestConfig
+from strategies.base import BaseStrategy, SignalType
+from backtester.backtest_engine import Backtester, BacktestConfig, Strategy as BtStrategy
 
 # ---------------------------------------------------------------------------
 # Application state
@@ -258,7 +259,7 @@ def describe_strategy(key: str):
     try:
         return get_registry().describe(key)
     except KeyError as exc:
-        raise HTTPException(404, str(exc))
+        raise HTTPException(404, "Not found") from exc
 
 
 @app.get("/strategies/by-category", tags=["strategies"])
@@ -290,7 +291,7 @@ def add_strategy(req: AddStrategyRequest):
     try:
         strategy = registry.create(req.strategy_key, assets=assets, **req.params)
     except KeyError as exc:
-        raise HTTPException(404, str(exc))
+        raise HTTPException(404, "Not found") from exc
     except Exception as exc:
         logger.error(f"Strategy creation error for '{req.strategy_key}': {exc}")
         raise HTTPException(400, "Strategy creation failed. Check server logs.")
@@ -314,7 +315,7 @@ def remove_strategy(instance_id: str):
     try:
         sm.remove_strategy(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, str(exc))
+        raise HTTPException(404, "Not found") from exc
     return {"message": f"Strategy '{instance_id}' removed."}
 
 
@@ -324,7 +325,7 @@ def start_strategy(instance_id: str):
     try:
         sm.start(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, str(exc))
+        raise HTTPException(404, "Not found") from exc
     return {"instance_id": instance_id, "state": StrategyState.RUNNING.value}
 
 
@@ -334,7 +335,7 @@ def pause_strategy(instance_id: str):
     try:
         sm.pause(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, str(exc))
+        raise HTTPException(404, "Not found") from exc
     return {"instance_id": instance_id, "state": StrategyState.PAUSED.value}
 
 
@@ -344,7 +345,7 @@ def stop_strategy(instance_id: str):
     try:
         sm.stop(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, str(exc))
+        raise HTTPException(404, "Not found") from exc
     return {"instance_id": instance_id, "state": StrategyState.STOPPED.value}
 
 
@@ -372,7 +373,7 @@ def get_strategy_status(instance_id: str):
     try:
         return sm.get_strategy_status(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, str(exc))
+        raise HTTPException(404, "Not found") from exc
 
 
 @app.put("/strategies/allocations", tags=["strategies"])
@@ -403,9 +404,9 @@ def feed_bar(req: BarDataRequest):
         if asset.symbol in req.prices:
             price_map[asset] = req.prices[asset.symbol]
 
-    # Also include assets from running strategies
-    for record in sm._records.values():
-        for asset in record.strategy.assets:
+    # Also include assets from running strategies (via public method)
+    for assets_list in sm.get_all_strategy_assets().values():
+        for asset in assets_list:
             if asset.symbol in req.prices:
                 price_map[asset] = req.prices[asset.symbol]
 
@@ -489,7 +490,7 @@ def run_backtest(req: BacktestRequest):
     try:
         strategy = registry.create(req.strategy_key, assets=assets, **req.params)
     except KeyError as exc:
-        raise HTTPException(404, str(exc))
+        raise HTTPException(404, "Not found") from exc
     except Exception as exc:
         logger.error(f"Backtest strategy creation error for '{req.strategy_key}': {exc}")
         raise HTTPException(400, "Strategy creation failed. Check server logs.")
@@ -497,12 +498,9 @@ def run_backtest(req: BacktestRequest):
     # Set assets on strategies that need it (e.g. SMA crossover)
     strategy.set_assets(assets)
 
-    # Wrap in a backtest-compatible adapter if needed
-    from backtester.backtest_engine import Strategy as BtStrategy
-    from strategies.base import BaseStrategy as _BaseStrategy
-
+    # Wrap strategy in a backtest-compatible adapter
     class _StrategyAdapter(BtStrategy):
-        def __init__(self, inner: _BaseStrategy):
+        def __init__(self, inner: BaseStrategy):
             super().__init__(inner.name)
             self._inner = inner
             self._inner.set_assets(assets)
@@ -511,21 +509,19 @@ def run_backtest(req: BacktestRequest):
             sigs = self._inner.on_bar(current_date, current_prices)
             for sig in sigs:
                 if self.portfolio:
-                    from strategies.base import SignalType as ST
-                    from core.trading_engine import OrderSide, OrderType
-                    if sig.signal_type == ST.BUY:
+                    if sig.signal_type == SignalType.BUY:
                         pos = self.portfolio.get_position(sig.asset)
                         if pos is None or pos.quantity == 0:
                             price = current_prices.get(sig.asset, sig.price)
                             qty = max(self.portfolio.cash * 0.1 / (price or 1), 1)
-                            order = self.portfolio.create_order(
+                            self.portfolio.create_order(
                                 sig.asset, OrderSide.BUY, qty, OrderType.MARKET, price
                             )
-                    elif sig.signal_type in (ST.SELL, ST.CLOSE):
+                    elif sig.signal_type in (SignalType.SELL, SignalType.CLOSE):
                         pos = self.portfolio.get_position(sig.asset)
                         if pos and pos.quantity > 0:
                             price = current_prices.get(sig.asset, sig.price)
-                            order = self.portfolio.create_order(
+                            self.portfolio.create_order(
                                 sig.asset, OrderSide.SELL, pos.quantity, OrderType.MARKET, price
                             )
 

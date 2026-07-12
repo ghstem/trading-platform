@@ -130,7 +130,7 @@ class PairsTradingStrategy(BaseStrategy):
                 strategy_name=self.name,
                 asset=self.asset_a,
                 signal_type=SignalType.BUY,
-                strength=min(abs(zscore) / self.entry_threshold - 1, 1.0),
+                strength=max(0.0, min(abs(zscore) / self.entry_threshold - 1, 1.0)),
                 price=price_a,
                 metadata={**metadata, "leg": "long"},
             ))
@@ -138,7 +138,7 @@ class PairsTradingStrategy(BaseStrategy):
                 strategy_name=self.name,
                 asset=self.asset_b,
                 signal_type=SignalType.SELL,
-                strength=min(abs(zscore) / self.entry_threshold - 1, 1.0),
+                strength=max(0.0, min(abs(zscore) / self.entry_threshold - 1, 1.0)),
                 price=price_b,
                 metadata={**metadata, "leg": "short"},
             ))
@@ -151,7 +151,7 @@ class PairsTradingStrategy(BaseStrategy):
                 strategy_name=self.name,
                 asset=self.asset_a,
                 signal_type=SignalType.SELL,
-                strength=min(abs(zscore) / self.entry_threshold - 1, 1.0),
+                strength=max(0.0, min(abs(zscore) / self.entry_threshold - 1, 1.0)),
                 price=price_a,
                 metadata={**metadata, "leg": "short"},
             ))
@@ -159,7 +159,7 @@ class PairsTradingStrategy(BaseStrategy):
                 strategy_name=self.name,
                 asset=self.asset_b,
                 signal_type=SignalType.BUY,
-                strength=min(abs(zscore) / self.entry_threshold - 1, 1.0),
+                strength=max(0.0, min(abs(zscore) / self.entry_threshold - 1, 1.0)),
                 price=price_b,
                 metadata={**metadata, "leg": "long"},
             ))
