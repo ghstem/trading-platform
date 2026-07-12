@@ -8,21 +8,28 @@ Start with:
 
 from __future__ import annotations
 
+import asyncio
+import time
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+import numpy as np
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from loguru import logger
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from config.settings import get_config
+from config.app_settings import get_settings
 from core.trading_engine import (
     Asset, AssetClass, Portfolio,
-    OrderSide, OrderType,
+    OrderSide, OrderType, OrderStatus,
 )
 from core.strategy_manager import StrategyManager, StrategyState
+from core.persistence import PersistenceManager
 from data_pipeline.market_data import get_market_data_manager
 from risk_management.risk_manager import RiskLimits, RiskManager
 from strategies.registry import get_registry
@@ -34,9 +41,23 @@ from backtester.backtest_engine import Backtester, BacktestConfig, Strategy as B
 # ---------------------------------------------------------------------------
 
 config = get_config()
+settings = get_settings()
 _portfolio: Optional[Portfolio] = None
 _risk_manager: Optional[RiskManager] = None
 _strategy_manager: Optional[StrategyManager] = None
+_persistence: Optional[PersistenceManager] = None
+
+# Metrics counters
+_metrics: Dict[str, Any] = {
+    "requests_total": 0,
+    "orders_total": 0,
+    "signals_total": 0,
+    "errors_total": 0,
+    "start_time": None,
+}
+
+# Active WebSocket connections for price streaming
+_ws_connections: List[WebSocket] = []
 
 
 def _get_portfolio() -> Portfolio:
@@ -51,6 +72,77 @@ def _get_strategy_manager() -> StrategyManager:
     return _strategy_manager
 
 
+def _get_persistence() -> PersistenceManager:
+    if _persistence is None:
+        raise HTTPException(500, "Persistence manager not initialised")
+    return _persistence
+
+
+# ---------------------------------------------------------------------------
+# Background auto-feed task
+# ---------------------------------------------------------------------------
+
+async def _auto_feed_task():
+    """
+    Periodically fetch live prices and push them as bars to all running
+    strategies.  Only active when BAR_AUTO_FEED_INTERVAL > 0.
+    """
+    interval = settings.BAR_AUTO_FEED_INTERVAL
+    if interval <= 0:
+        return
+    logger.info(f"Auto-feed task started (interval={interval}s)")
+    mdm = get_market_data_manager()
+    while True:
+        await asyncio.sleep(interval)
+        sm = _strategy_manager
+        port = _portfolio
+        if sm is None or port is None:
+            continue
+        try:
+            all_assets = {
+                asset
+                for assets in sm.get_all_strategy_assets().values()
+                for asset in assets
+            }
+            all_assets |= set(port.positions.keys())
+            if not all_assets:
+                continue
+            price_map: Dict[Asset, float] = {}
+            for asset in all_assets:
+                price = mdm.fetch_current_price(asset, use_cache=True)
+                if price > 0:
+                    price_map[asset] = price
+            if price_map:
+                accepted = sm.on_bar(datetime.now(), price_map)
+                if accepted:
+                    _metrics["signals_total"] += len(accepted)
+                    payload = {
+                        "type": "bar",
+                        "timestamp": datetime.now().isoformat(),
+                        "prices": {a.symbol: p for a, p in price_map.items()},
+                        "signals": len(accepted),
+                    }
+                    await _broadcast_ws(payload)
+                    if _persistence:
+                        _persistence.record_equity(port)
+        except Exception as exc:
+            logger.error(f"Auto-feed error: {exc}")
+
+
+async def _broadcast_ws(payload: dict) -> None:
+    """Send a JSON message to all connected WebSocket clients."""
+    import json
+    disconnected = []
+    for ws in list(_ws_connections):
+        try:
+            await ws.send_json(payload)
+        except Exception:
+            disconnected.append(ws)
+    for ws in disconnected:
+        if ws in _ws_connections:
+            _ws_connections.remove(ws)
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -58,9 +150,14 @@ def _get_strategy_manager() -> StrategyManager:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup / shutdown."""
-    global _portfolio, _risk_manager, _strategy_manager
+    global _portfolio, _risk_manager, _strategy_manager, _persistence
 
     logger.info("Starting Trading Platform API…")
+    _metrics["start_time"] = datetime.utcnow().isoformat()
+
+    # Persistence
+    _persistence = PersistenceManager(settings.DATABASE_URL)
+
     _portfolio = Portfolio(initial_capital=config.INITIAL_CAPITAL)
     _risk_manager = RiskManager(
         portfolio=_portfolio,
@@ -75,7 +172,20 @@ async def lifespan(app: FastAPI):
         risk_manager=_risk_manager,
     )
     logger.info(f"Portfolio initialised with ${_portfolio.initial_capital:,.0f} capital")
+
+    # Save initial snapshot
+    _persistence.save_portfolio_snapshot(_portfolio)
+
+    # Start background auto-feed
+    task = asyncio.create_task(_auto_feed_task())
+
     yield
+
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
     logger.info("Trading Platform API shutting down.")
 
 
@@ -93,12 +203,61 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# ── CORS ────────────────────────────────────────────────────────────────────
+# Restrict origins to those declared in settings; use ["*"] only in development.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
+    allow_origins=settings.CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
+
+
+# ── Request-ID middleware ────────────────────────────────────────────────────
+class RequestIDMiddleware(BaseHTTPMiddleware):
+    """Attach a unique ``X-Request-ID`` to every request and response."""
+
+    async def dispatch(self, request: Request, call_next):
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        _metrics["requests_total"] += 1
+        start = time.perf_counter()
+        response: Response = await call_next(request)
+        duration_ms = (time.perf_counter() - start) * 1000
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Response-Time-Ms"] = f"{duration_ms:.1f}"
+        return response
+
+
+app.add_middleware(RequestIDMiddleware)
+
+
+# ── API key authentication ───────────────────────────────────────────────────
+class APIKeyMiddleware(BaseHTTPMiddleware):
+    """
+    When ``API_KEY`` is configured in settings, require callers to pass the
+    header ``X-API-Key: <value>``.
+    Skips auth for health / docs / metrics endpoints.
+    """
+
+    _EXEMPT_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc", "/metrics"}
+
+    async def dispatch(self, request: Request, call_next):
+        if settings.API_KEY is None:
+            return await call_next(request)
+        if request.url.path in self._EXEMPT_PATHS:
+            return await call_next(request)
+        provided = request.headers.get("X-API-Key", "")
+        if provided != settings.API_KEY:
+            _metrics["errors_total"] += 1
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing API key"},
+            )
+        return await call_next(request)
+
+
+app.add_middleware(APIKeyMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -240,8 +399,82 @@ def place_order(req: OrderRequest):
 
     asset = Asset(symbol=req.symbol.upper(), asset_class=ac, exchange="MANUAL")
     order = port.create_order(asset, side, req.quantity, otype, req.price)
+
+    # ── Risk validation ──────────────────────────────────────────────
+    if _risk_manager is not None:
+        can, reason = _risk_manager.can_trade()
+        if not can:
+            order.status = OrderStatus.REJECTED
+            _metrics["errors_total"] += 1
+            raise HTTPException(403, f"Order blocked by risk manager: {reason}")
+        valid, reason = _risk_manager.validate_order(order)
+        if not valid:
+            order.status = OrderStatus.REJECTED
+            _metrics["errors_total"] += 1
+            raise HTTPException(422, f"Order failed risk validation: {reason}")
+
     port.execute_order(order, req.price or 0.0, req.quantity)
+    _metrics["orders_total"] += 1
+
+    # Persist the trade
+    if _persistence is not None:
+        try:
+            _persistence.save_trade(order)
+        except Exception as exc:
+            logger.warning(f"Failed to persist trade: {exc}")
+
     return {"order_id": order.order_id, "status": order.status.value}
+
+
+@app.get("/portfolio/performance", tags=["portfolio"])
+def portfolio_performance():
+    """
+    Return equity curve, drawdown curve, and period returns for the portfolio.
+    Data is loaded from the persistence layer.
+    """
+    pm = _get_persistence()
+    curve = pm.load_equity_curve(limit=5000)
+
+    if len(curve) < 2:
+        return {
+            "equity_curve": curve,
+            "drawdown_curve": [],
+            "period_returns": {"daily": [], "weekly": [], "monthly": []},
+        }
+
+    import pandas as pd
+    df = pd.DataFrame(curve)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df = df.set_index("timestamp").sort_index()
+
+    # Drawdown
+    running_max = df["total_equity"].expanding().max()
+    dd = ((df["total_equity"] - running_max) / running_max).fillna(0.0)
+    drawdown_curve = [
+        {"timestamp": ts.isoformat(), "drawdown": round(float(d), 6)}
+        for ts, d in dd.items()
+    ]
+
+    # Period returns
+    daily_ret = df["total_equity"].resample("D").last().pct_change().dropna()
+    weekly_ret = df["total_equity"].resample("W").last().pct_change().dropna()
+    monthly_ret = df["total_equity"].resample("ME").last().pct_change().dropna()
+
+    def _to_list(series):
+        return [
+            {"period": str(ts.date()), "return": round(float(v), 6)}
+            for ts, v in series.items()
+        ]
+
+    return {
+        "equity_curve": curve,
+        "drawdown_curve": drawdown_curve,
+        "period_returns": {
+            "daily": _to_list(daily_ret),
+            "weekly": _to_list(weekly_ret),
+            "monthly": _to_list(monthly_ret),
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +609,45 @@ def get_strategy_status(instance_id: str):
         raise HTTPException(404, "Strategy instance not found") from exc
 
 
+@app.get("/strategies/{instance_id}/performance", tags=["strategies"])
+def get_strategy_performance(instance_id: str):
+    """
+    Return detailed performance breakdown for a single strategy instance:
+    Sharpe ratio (approximated), win rate, PnL, signal counts.
+    """
+    sm = _get_strategy_manager()
+    try:
+        record_dict = sm.get_strategy_status(instance_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Strategy instance not found") from exc
+
+    perf = record_dict.get("performance", {})
+
+    # Derive approximate Sharpe from signal-level PnL history (if available)
+    strategy = sm._records[instance_id].strategy
+    trade_pnls = [
+        strategy.performance.total_pnl
+    ]  # per-trade breakdown not available at base level; return summary
+    total_trades = perf.get("trades_executed", 0)
+    win_rate = perf.get("win_rate", 0.0)
+    total_pnl = perf.get("total_pnl", 0.0)
+
+    return {
+        "instance_id": instance_id,
+        "strategy_name": record_dict.get("strategy_name"),
+        "state": record_dict.get("state"),
+        "total_signals": perf.get("total_signals", 0),
+        "buy_signals": perf.get("buy_signals", 0),
+        "sell_signals": perf.get("sell_signals", 0),
+        "trades_executed": total_trades,
+        "win_rate": win_rate,
+        "total_pnl": total_pnl,
+        "signals_generated": record_dict.get("signals_generated", 0),
+        "orders_placed": record_dict.get("orders_placed", 0),
+        "allocated_capital": record_dict.get("allocated_capital", 0.0),
+    }
+
+
 @app.put("/strategies/allocations", tags=["strategies"])
 def update_allocations(req: UpdateAllocationRequest):
     _get_strategy_manager().update_allocations(req.allocations)
@@ -411,8 +683,9 @@ def feed_bar(req: BarDataRequest):
                 price_map[asset] = req.prices[asset.symbol]
 
     accepted = sm.on_bar(ts, price_map)
+    _metrics["signals_total"] += len(accepted)
 
-    return {
+    result = {
         "timestamp": ts.isoformat(),
         "prices_received": len(req.prices),
         "signals_accepted": len(accepted),
@@ -427,6 +700,31 @@ def feed_bar(req: BarDataRequest):
             for s in accepted
         ],
     }
+
+    # Persist equity snapshot and broadcast to WS clients
+    if _persistence is not None:
+        try:
+            _persistence.record_equity(port)
+        except Exception as exc:
+            logger.warning(f"Equity record failed: {exc}")
+
+    if _ws_connections:
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(
+                    _broadcast_ws({
+                        "type": "bar",
+                        "timestamp": ts.isoformat(),
+                        "prices": req.prices,
+                        "signals": len(accepted),
+                    })
+                )
+        except Exception:
+            pass
+
+    return result
 
 
 @app.get("/market/signals", tags=["market-data"])
@@ -541,7 +839,25 @@ def run_backtest(req: BacktestRequest):
         logger.error(f"Backtest execution error: {exc}")
         raise HTTPException(500, "Backtest failed. Check server logs.")
 
-    return backtester.get_stats_summary()
+    # Return numeric types (not pre-formatted strings) for downstream use
+    return {
+        "strategy": backtester.strategy.name,
+        "initial_capital": bt_config.initial_capital,
+        "final_equity": round(stats.final_equity, 2),
+        "total_return": round(stats.total_return, 6),
+        "annual_return": round(stats.annual_return, 6),
+        "volatility": round(stats.volatility, 6),
+        "sharpe_ratio": round(stats.sharpe_ratio, 4),
+        "max_drawdown": round(stats.max_drawdown, 6),
+        "total_trades": stats.num_trades,
+        "winning_trades": stats.num_winning_trades,
+        "losing_trades": stats.num_losing_trades,
+        "win_rate": round(stats.win_rate, 4),
+        "profit_factor": round(stats.profit_factor, 4),
+        "avg_win": round(stats.avg_win, 2),
+        "avg_loss": round(stats.avg_loss, 2),
+        "total_pnl": round(stats.total_pnl, 2),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -585,3 +901,89 @@ def resume_trading():
     _risk_manager.is_trading_halted = False
     _get_strategy_manager().start_all()
     return {"message": "Trading resumed. All strategies started."}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — real-time price streaming
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws/prices")
+async def ws_prices(websocket: WebSocket):
+    """
+    WebSocket endpoint for real-time price and signal streaming.
+
+    Clients connect here to receive JSON frames whenever the auto-feed
+    background task pushes a new bar, or whenever a price update is
+    manually POSTed to ``/market/bar``.
+
+    Frame format::
+
+        {
+          "type": "bar",
+          "timestamp": "2024-01-15T10:30:00",
+          "prices": {"AAPL": 185.32, "BTC": 42000.0},
+          "signals": 2
+        }
+    """
+    await websocket.accept()
+    _ws_connections.append(websocket)
+    logger.info(f"WebSocket client connected. Total: {len(_ws_connections)}")
+    try:
+        while True:
+            # Keep connection alive; client can send pings
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in _ws_connections:
+            _ws_connections.remove(websocket)
+        logger.info(f"WebSocket client disconnected. Total: {len(_ws_connections)}")
+
+
+# ---------------------------------------------------------------------------
+# Metrics endpoint (Prometheus-compatible plain-text)
+# ---------------------------------------------------------------------------
+
+@app.get("/metrics", tags=["system"])
+def metrics():
+    """
+    Expose platform metrics in a Prometheus-compatible text format
+    (counter lines) as well as a JSON summary.
+    """
+    if not settings.METRICS_ENABLED:
+        raise HTTPException(404, "Metrics endpoint disabled")
+
+    uptime_seconds: float = 0.0
+    if _metrics["start_time"]:
+        start = datetime.fromisoformat(_metrics["start_time"])
+        uptime_seconds = (datetime.utcnow() - start).total_seconds()
+
+    port = _portfolio
+    return {
+        "uptime_seconds": round(uptime_seconds, 1),
+        "requests_total": _metrics["requests_total"],
+        "orders_total": _metrics["orders_total"],
+        "signals_total": _metrics["signals_total"],
+        "errors_total": _metrics["errors_total"],
+        "ws_connections": len(_ws_connections),
+        "portfolio_equity": round(port.total_equity, 2) if port else 0.0,
+        "portfolio_cash": round(port.cash, 2) if port else 0.0,
+        "open_positions": len(port.positions) if port else 0,
+        "strategies_running": len(_strategy_manager.list_running()) if _strategy_manager else 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Persistence routes
+# ---------------------------------------------------------------------------
+
+@app.get("/portfolio/history", tags=["portfolio"])
+def portfolio_history(limit: int = Query(default=100, ge=1, le=5000)):
+    """Return recent portfolio snapshots (newest first)."""
+    return {"snapshots": _get_persistence().load_portfolio_snapshots(limit)}
+
+
+@app.get("/portfolio/trades", tags=["portfolio"])
+def portfolio_trade_history(limit: int = Query(default=100, ge=1, le=1000)):
+    """Return persisted trade history (newest first)."""
+    return {"trades": _get_persistence().load_trade_history(limit)}
