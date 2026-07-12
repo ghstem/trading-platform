@@ -259,7 +259,7 @@ def describe_strategy(key: str):
     try:
         return get_registry().describe(key)
     except KeyError as exc:
-        raise HTTPException(404, "Not found") from exc
+        raise HTTPException(404, "Strategy type not found in registry") from exc
 
 
 @app.get("/strategies/by-category", tags=["strategies"])
@@ -291,7 +291,7 @@ def add_strategy(req: AddStrategyRequest):
     try:
         strategy = registry.create(req.strategy_key, assets=assets, **req.params)
     except KeyError as exc:
-        raise HTTPException(404, "Not found") from exc
+        raise HTTPException(404, "Strategy type not found in registry") from exc
     except Exception as exc:
         logger.error(f"Strategy creation error for '{req.strategy_key}': {exc}")
         raise HTTPException(400, "Strategy creation failed. Check server logs.")
@@ -315,7 +315,7 @@ def remove_strategy(instance_id: str):
     try:
         sm.remove_strategy(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, "Not found") from exc
+        raise HTTPException(404, "Strategy instance not found") from exc
     return {"message": f"Strategy '{instance_id}' removed."}
 
 
@@ -325,7 +325,7 @@ def start_strategy(instance_id: str):
     try:
         sm.start(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, "Not found") from exc
+        raise HTTPException(404, "Strategy instance not found") from exc
     return {"instance_id": instance_id, "state": StrategyState.RUNNING.value}
 
 
@@ -335,7 +335,7 @@ def pause_strategy(instance_id: str):
     try:
         sm.pause(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, "Not found") from exc
+        raise HTTPException(404, "Strategy instance not found") from exc
     return {"instance_id": instance_id, "state": StrategyState.PAUSED.value}
 
 
@@ -345,7 +345,7 @@ def stop_strategy(instance_id: str):
     try:
         sm.stop(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, "Not found") from exc
+        raise HTTPException(404, "Strategy instance not found") from exc
     return {"instance_id": instance_id, "state": StrategyState.STOPPED.value}
 
 
@@ -373,7 +373,7 @@ def get_strategy_status(instance_id: str):
     try:
         return sm.get_strategy_status(instance_id)
     except KeyError as exc:
-        raise HTTPException(404, "Not found") from exc
+        raise HTTPException(404, "Strategy instance not found") from exc
 
 
 @app.put("/strategies/allocations", tags=["strategies"])
@@ -490,7 +490,7 @@ def run_backtest(req: BacktestRequest):
     try:
         strategy = registry.create(req.strategy_key, assets=assets, **req.params)
     except KeyError as exc:
-        raise HTTPException(404, "Not found") from exc
+        raise HTTPException(404, "Strategy type not found in registry") from exc
     except Exception as exc:
         logger.error(f"Backtest strategy creation error for '{req.strategy_key}': {exc}")
         raise HTTPException(400, "Strategy creation failed. Check server logs.")
