@@ -208,7 +208,7 @@ class Backtester:
             
             # Execute pending orders
             for order in self.portfolio.orders:
-                if order.status == order.OrderStatus.PENDING and order.asset in current_prices:
+                if order.status == OrderStatus.PENDING and order.asset in current_prices:
                     fill_price = current_prices[order.asset]
                     
                     # Apply slippage
