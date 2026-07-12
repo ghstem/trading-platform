@@ -1,8 +1,12 @@
 # trading-platform
 
-**All-in-one AI-powered trading and financial platform — built for live trading.**
+**All-in-one AI-powered trading and financial platform — supports both paper trading and live trading.**
 
-A production-ready automated trading system that runs real orders through live brokers, manages multiple strategies simultaneously, and handles the full trade lifecycle from signal generation to execution and risk control.
+A production-ready automated trading system that runs real orders through live brokers (or a built-in paper simulator), manages multiple strategies simultaneously, and handles the full trade lifecycle from signal generation to execution and risk control.
+
+**Choose your mode:**
+- 🟡 **Paper trading** — test and iterate on strategies with zero financial risk using the built-in simulator with realistic slippage and commission.
+- 🟢 **Live trading** — connect a real brokerage account (Alpaca or Interactive Brokers) and deploy capital on actual markets.
 
 ---
 
@@ -86,4 +90,4 @@ trading-platform/
 
 ## Disclaimer
 
-This software is for educational and research purposes. Live trading involves significant financial risk. Use paper trading accounts to validate strategies before deploying real capital.
+Live trading involves significant financial risk. Always validate strategies in paper trading mode before deploying real capital.
