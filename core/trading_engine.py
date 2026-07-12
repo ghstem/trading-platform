@@ -4,7 +4,7 @@ Central hub for managing trades, positions, and portfolio across multiple market
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
 import uuid
@@ -47,24 +47,50 @@ class AssetClass(Enum):
     COMMODITY = "COMMODITY"
 
 
+class OptionType(Enum):
+    """Option contract type"""
+    CALL = "CALL"
+    PUT = "PUT"
+
+
 @dataclass
 class Asset:
-    """Represents a tradable asset"""
+    """Represents a tradable asset.
+
+    For stocks and crypto, only ``symbol``, ``asset_class``, ``exchange``,
+    ``currency``, and ``multiplier`` are required.
+
+    For **futures**, ``expiry`` (a :class:`datetime.date`) and ``multiplier``
+    (contract size) should be set so that two contracts with different
+    expiries are treated as distinct assets.
+
+    For **options**, ``expiry`` (a :class:`datetime.date`), ``strike``, and
+    ``option_type`` (:class:`OptionType`) are required to uniquely identify
+    a contract.  All three are included in the hash/equality check.
+    """
     symbol: str
     asset_class: AssetClass
     exchange: str
     currency: str = "USD"
     multiplier: float = 1.0
-    
+    # Options / futures contract details (None for stocks and crypto)
+    expiry: Optional[date] = None          # contract expiry / expiration date
+    strike: Optional[float] = None         # option strike price
+    option_type: Optional[OptionType] = None  # CALL or PUT (options only)
+
     def __hash__(self):
-        return hash((self.symbol, self.asset_class, self.exchange))
-    
+        return hash((self.symbol, self.asset_class, self.exchange,
+                     self.expiry, self.strike, self.option_type))
+
     def __eq__(self, other):
         if not isinstance(other, Asset):
             return False
-        return (self.symbol == other.symbol and 
-                self.asset_class == other.asset_class and 
-                self.exchange == other.exchange)
+        return (self.symbol == other.symbol and
+                self.asset_class == other.asset_class and
+                self.exchange == other.exchange and
+                self.expiry == other.expiry and
+                self.strike == other.strike and
+                self.option_type == other.option_type)
 
 
 @dataclass
@@ -77,6 +103,8 @@ class Order:
     quantity: float = 0.0
     price: float = 0.0
     stop_price: Optional[float] = None
+    stop_loss: Optional[float] = None    # price level at which position is closed at a loss
+    take_profit: Optional[float] = None  # price level at which position is closed at a profit
     status: OrderStatus = OrderStatus.PENDING
     filled_quantity: float = 0.0
     average_fill_price: float = 0.0
@@ -245,7 +273,10 @@ class Portfolio:
     
     def create_order(self, asset: Asset, side: OrderSide, quantity: float,
                     order_type: OrderType = OrderType.MARKET, price: float = 0.0,
-                    stop_price: Optional[float] = None, broker: str = "default") -> Order:
+                    stop_price: Optional[float] = None,
+                    stop_loss: Optional[float] = None,
+                    take_profit: Optional[float] = None,
+                    broker: str = "default") -> Order:
         """Create a new order"""
         
         # Validate order
@@ -265,6 +296,8 @@ class Portfolio:
             quantity=quantity,
             price=price,
             stop_price=stop_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
             broker=broker
         )
         

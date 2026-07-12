@@ -180,30 +180,233 @@ class CryptoDataProvider(MarketDataProvider):
 
 
 class ForexDataProvider(MarketDataProvider):
-    """Forex data provider (placeholder for future API integration)"""
-    
-    def __init__(self, api_key: Optional[str] = None):
-        super().__init__("Forex Data")
-        self.api_key = api_key
-    
+    """
+    Forex data provider backed by Yahoo Finance.
+
+    Yahoo Finance exposes forex rates as tickers with an ``=X`` suffix
+    (e.g. ``EURUSD=X``, ``GBPUSD=X``).  The provider automatically appends
+    the suffix when it is absent so callers can pass either ``"EURUSD"`` or
+    ``"EURUSD=X"``.
+    """
+
+    def __init__(self):
+        super().__init__("Forex (Yahoo Finance)")
+
+    @staticmethod
+    def _to_yf_symbol(symbol: str) -> str:
+        """Normalise a forex pair to Yahoo Finance ticker format."""
+        if not symbol.endswith("=X"):
+            return f"{symbol}=X"
+        return symbol
+
     def fetch_ohlcv(self, symbol: str, timeframe: str = "1d", limit: int = 100) -> pd.DataFrame:
-        """Fetch OHLCV forex data"""
-        # TODO: Integrate with OANDA, FXCM, or other forex APIs
-        logger.warning(f"Forex data fetching not yet implemented for {symbol}")
-        return pd.DataFrame()
-    
+        """Fetch OHLCV forex data via Yahoo Finance."""
+        yf_symbol = self._to_yf_symbol(symbol)
+        try:
+            interval_map = {
+                "1m": "1m", "5m": "5m", "15m": "15m",
+                "1h": "1h", "1d": "1d", "1wk": "1wk", "1mo": "1mo",
+            }
+            interval = interval_map.get(timeframe, "1d")
+            period = (
+                f"{limit}d" if interval == "1d" else
+                f"{limit * 7}d" if interval == "1wk" else
+                f"{limit * 30}d" if interval == "1mo" else
+                "1d"
+            )
+            ticker = yf.Ticker(yf_symbol)
+            df = ticker.history(period=period, interval=interval)
+            if df.empty:
+                logger.warning(f"No forex data returned for {yf_symbol}")
+                return pd.DataFrame()
+            df.columns = df.columns.str.lower()
+            df = df[['open', 'high', 'low', 'close', 'volume']]
+            df.index.name = 'timestamp'
+            logger.info(f"Fetched {len(df)} candles for {yf_symbol} from Yahoo Finance (Forex)")
+            self.last_update = datetime.now()
+            return df
+        except Exception as e:
+            logger.error(f"Error fetching forex data for {yf_symbol}: {str(e)}")
+            return pd.DataFrame()
+
     def fetch_current_price(self, symbol: str) -> float:
-        """Fetch current forex price"""
-        # TODO: Implement forex price fetching
-        logger.warning(f"Forex price fetching not yet implemented for {symbol}")
-        return 0.0
-    
+        """Fetch current forex rate via Yahoo Finance."""
+        yf_symbol = self._to_yf_symbol(symbol)
+        try:
+            ticker = yf.Ticker(yf_symbol)
+            price = ticker.info.get('regularMarketPrice') or ticker.info.get('currentPrice', 0)
+            logger.info(f"Fetched forex rate for {yf_symbol}: {price}")
+            return float(price)
+        except Exception as e:
+            logger.error(f"Error fetching forex price for {yf_symbol}: {str(e)}")
+            return 0.0
+
     def fetch_multiple_prices(self, symbols: List[str]) -> Dict[str, float]:
-        """Fetch multiple forex prices"""
-        prices = {}
-        for symbol in symbols:
-            prices[symbol] = self.fetch_current_price(symbol)
-        return prices
+        return {symbol: self.fetch_current_price(symbol) for symbol in symbols}
+
+
+class FuturesDataProvider(MarketDataProvider):
+    """
+    Futures data provider backed by Yahoo Finance.
+
+    Yahoo Finance exposes front-month futures with an ``=F`` suffix
+    (e.g. ``ES=F``, ``NQ=F``, ``CL=F``).  The provider appends the suffix
+    automatically when it is absent.
+    """
+
+    def __init__(self):
+        super().__init__("Futures (Yahoo Finance)")
+
+    @staticmethod
+    def _to_yf_symbol(symbol: str) -> str:
+        """Normalise a futures symbol to Yahoo Finance ticker format."""
+        if not symbol.endswith("=F"):
+            return f"{symbol}=F"
+        return symbol
+
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "1d", limit: int = 100) -> pd.DataFrame:
+        """Fetch OHLCV futures data via Yahoo Finance."""
+        yf_symbol = self._to_yf_symbol(symbol)
+        try:
+            interval_map = {
+                "1m": "1m", "5m": "5m", "15m": "15m",
+                "1h": "1h", "1d": "1d", "1wk": "1wk", "1mo": "1mo",
+            }
+            interval = interval_map.get(timeframe, "1d")
+            period = (
+                f"{limit}d" if interval == "1d" else
+                f"{limit * 7}d" if interval == "1wk" else
+                f"{limit * 30}d" if interval == "1mo" else
+                "1d"
+            )
+            ticker = yf.Ticker(yf_symbol)
+            df = ticker.history(period=period, interval=interval)
+            if df.empty:
+                logger.warning(f"No futures data returned for {yf_symbol}")
+                return pd.DataFrame()
+            df.columns = df.columns.str.lower()
+            df = df[['open', 'high', 'low', 'close', 'volume']]
+            df.index.name = 'timestamp'
+            logger.info(f"Fetched {len(df)} candles for {yf_symbol} from Yahoo Finance (Futures)")
+            self.last_update = datetime.now()
+            return df
+        except Exception as e:
+            logger.error(f"Error fetching futures data for {yf_symbol}: {str(e)}")
+            return pd.DataFrame()
+
+    def fetch_current_price(self, symbol: str) -> float:
+        """Fetch current futures price via Yahoo Finance."""
+        yf_symbol = self._to_yf_symbol(symbol)
+        try:
+            ticker = yf.Ticker(yf_symbol)
+            price = ticker.info.get('regularMarketPrice') or ticker.info.get('currentPrice', 0)
+            logger.info(f"Fetched futures price for {yf_symbol}: {price}")
+            return float(price)
+        except Exception as e:
+            logger.error(f"Error fetching futures price for {yf_symbol}: {str(e)}")
+            return 0.0
+
+    def fetch_multiple_prices(self, symbols: List[str]) -> Dict[str, float]:
+        return {symbol: self.fetch_current_price(symbol) for symbol in symbols}
+
+
+class OptionsDataProvider(MarketDataProvider):
+    """
+    Options data provider backed by Yahoo Finance option chains.
+
+    Symbols are expected in the form ``"UNDERLYING_YYYY-MM-DD_TYPE_STRIKE"``
+    where *TYPE* is ``C`` (call) or ``P`` (put), e.g.
+    ``"AAPL_2024-01-19_C_150"``.
+
+    ``fetch_ohlcv`` is not meaningful for options contracts; it returns an
+    empty DataFrame.  Use ``fetch_current_price`` to get the last trade
+    price (mid of bid/ask when last price is unavailable).
+    """
+
+    def __init__(self):
+        super().__init__("Options (Yahoo Finance)")
+
+    @staticmethod
+    def _parse_symbol(symbol: str) -> Optional[Tuple[str, str, str, float]]:
+        """
+        Parse ``"UNDERLYING_YYYY-MM-DD_TYPE_STRIKE"`` into a 4-tuple
+        ``(underlying, expiry_str, option_type, strike)``.
+
+        Returns ``None`` if the symbol cannot be parsed.  Reasons for failure:
+
+        * Not exactly 4 underscore-separated parts.
+        * ``TYPE`` is not ``"C"`` or ``"P"`` (case-insensitive).
+        * ``STRIKE`` is not a valid number (e.g. ``"abc"``).
+
+        Examples of valid symbols: ``"AAPL_2024-01-19_C_150"``,
+        ``"SPY_2024-06-21_P_450.5"``.
+        """
+        try:
+            parts = symbol.split("_")
+            if len(parts) != 4:
+                return None
+            underlying, expiry_str, option_type, strike_str = parts
+            if option_type.upper() not in ("C", "P"):
+                return None
+            return underlying, expiry_str, option_type.upper(), float(strike_str)
+        except (ValueError, AttributeError):
+            return None
+
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "1d", limit: int = 100) -> pd.DataFrame:
+        """Options do not expose intraday OHLCV via yfinance; returns empty."""
+        logger.info(f"fetch_ohlcv is not supported for options contracts ({symbol})")
+        return pd.DataFrame()
+
+    def fetch_current_price(self, symbol: str) -> float:
+        """
+        Fetch the current price of an option contract.
+
+        Looks up the option in the Yahoo Finance option chain for the given
+        underlying and expiry, matching on strike and type.  Returns the
+        ``lastPrice`` if available, otherwise the mid of bid and ask.
+        """
+        parsed = self._parse_symbol(symbol)
+        if parsed is None:
+            logger.error(
+                f"Cannot parse option symbol '{symbol}'. "
+                "Expected format: UNDERLYING_YYYY-MM-DD_C|P_STRIKE (e.g. AAPL_2024-01-19_C_150)"
+            )
+            return 0.0
+        underlying, expiry_str, option_type, strike = parsed
+        try:
+            ticker = yf.Ticker(underlying)
+            chain = ticker.option_chain(expiry_str)
+            contracts = chain.calls if option_type == "C" else chain.puts
+            # Find the contract with the closest strike
+            match = contracts[contracts['strike'] == strike]
+            if match.empty:
+                # Nearest strike fallback
+                idx = (contracts['strike'] - strike).abs().idxmin()
+                nearest = contracts.loc[idx, 'strike']
+                distance_pct = abs(nearest - strike) / strike * 100 if strike != 0 else float('inf')
+                if distance_pct > 5:
+                    logger.warning(
+                        f"Exact strike {strike} not found for {symbol}; "
+                        f"falling back to nearest strike {nearest} "
+                        f"({distance_pct:.1f}% away)"
+                    )
+                match = contracts.loc[[idx]]
+            row = match.iloc[0]
+            last = float(row.get('lastPrice', 0) or 0)
+            if last > 0:
+                price = last
+            else:
+                bid = float(row.get('bid', 0) or 0)
+                ask = float(row.get('ask', 0) or 0)
+                price = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
+            logger.info(f"Fetched option price for {symbol}: {price}")
+            return price
+        except Exception as e:
+            logger.error(f"Error fetching option price for {symbol}: {str(e)}")
+            return 0.0
+
+    def fetch_multiple_prices(self, symbols: List[str]) -> Dict[str, float]:
+        return {symbol: self.fetch_current_price(symbol) for symbol in symbols}
 
 
 class MarketDataManager:
@@ -221,19 +424,21 @@ class MarketDataManager:
     def _initialize_default_providers(self):
         """Initialize default market data providers"""
         self.providers['yahoo'] = YahooFinanceProvider()
-        
+
         # Initialize cryptocurrency providers
         try:
             self.providers['binance'] = CryptoDataProvider('binance')
         except Exception as e:
             logger.warning(f"Could not initialize Binance provider: {str(e)}")
-        
+
         try:
             self.providers['coinbase'] = CryptoDataProvider('coinbase')
         except Exception as e:
             logger.warning(f"Could not initialize Coinbase provider: {str(e)}")
-        
+
         self.providers['forex'] = ForexDataProvider()
+        self.providers['futures'] = FuturesDataProvider()
+        self.providers['options'] = OptionsDataProvider()
     
     def add_provider(self, name: str, provider: MarketDataProvider):
         """Add a custom market data provider"""
@@ -248,6 +453,10 @@ class MarketDataManager:
             return self.providers.get('binance') or self.providers.get('coinbase')
         elif asset_class == AssetClass.FOREX:
             return self.providers.get('forex')
+        elif asset_class == AssetClass.FUTURE:
+            return self.providers.get('futures')
+        elif asset_class == AssetClass.OPTION:
+            return self.providers.get('options')
         else:
             return self.providers.get('yahoo')  # Default to Yahoo
     
