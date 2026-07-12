@@ -77,6 +77,8 @@ class Order:
     quantity: float = 0.0
     price: float = 0.0
     stop_price: Optional[float] = None
+    stop_loss: Optional[float] = None    # price level at which position is closed at a loss
+    take_profit: Optional[float] = None  # price level at which position is closed at a profit
     status: OrderStatus = OrderStatus.PENDING
     filled_quantity: float = 0.0
     average_fill_price: float = 0.0
@@ -245,7 +247,10 @@ class Portfolio:
     
     def create_order(self, asset: Asset, side: OrderSide, quantity: float,
                     order_type: OrderType = OrderType.MARKET, price: float = 0.0,
-                    stop_price: Optional[float] = None, broker: str = "default") -> Order:
+                    stop_price: Optional[float] = None,
+                    stop_loss: Optional[float] = None,
+                    take_profit: Optional[float] = None,
+                    broker: str = "default") -> Order:
         """Create a new order"""
         
         # Validate order
@@ -265,6 +270,8 @@ class Portfolio:
             quantity=quantity,
             price=price,
             stop_price=stop_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
             broker=broker
         )
         

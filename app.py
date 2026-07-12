@@ -308,6 +308,8 @@ class OrderRequest(BaseModel):
     quantity: float
     order_type: str = "MARKET"
     price: float = 0.0
+    stop_loss: Optional[float] = None    # price level to trigger a protective sell
+    take_profit: Optional[float] = None  # price level to lock in profit
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +400,11 @@ def place_order(req: OrderRequest):
         raise HTTPException(400, f"Unknown order_type: {req.order_type}")
 
     asset = Asset(symbol=req.symbol.upper(), asset_class=ac, exchange="MANUAL")
-    order = port.create_order(asset, side, req.quantity, otype, req.price)
+    order = port.create_order(
+        asset, side, req.quantity, otype, req.price,
+        stop_loss=req.stop_loss,
+        take_profit=req.take_profit,
+    )
 
     # ── Risk validation ──────────────────────────────────────────────
     if _risk_manager is not None:
@@ -730,6 +736,12 @@ def feed_bar(req: BarDataRequest):
 @app.get("/market/signals", tags=["market-data"])
 def signal_log(limit: int = Query(default=50, ge=1, le=1000)):
     return {"signals": _get_strategy_manager().get_signal_log(limit)}
+
+
+@app.get("/market/stop-levels", tags=["market-data"])
+def stop_levels():
+    """Return all active stop-loss / take-profit levels currently being tracked."""
+    return {"stop_levels": _get_strategy_manager().get_stop_levels()}
 
 
 # ---------------------------------------------------------------------------

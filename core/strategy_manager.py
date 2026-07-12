@@ -109,6 +109,7 @@ class StrategyManager:
         self._bar_count: int = 0
         self._all_signals: List[Tuple[datetime, Signal]] = []   # full audit log
         self._all_orders: List[Order] = []
+        self._stop_levels: Dict[Asset, Dict] = {}  # asset → {stop_loss, take_profit, instance_id}
 
         logger.info("StrategyManager initialised")
 
@@ -228,6 +229,9 @@ class StrategyManager:
         if self.risk_manager:
             self.risk_manager.update_metrics(current_prices)
 
+        # Check stop-loss / take-profit levels before processing new signals
+        self._check_stop_levels(current_prices)
+
         for iid, record in self._records.items():
             if record.state != StrategyState.RUNNING:
                 continue
@@ -288,6 +292,8 @@ class StrategyManager:
             if position is None or position.quantity <= 0:
                 return None
             quantity = abs(position.quantity)
+            # Clear any tracked SL/TP for this asset when strategy closes the position
+            self._stop_levels.pop(asset, None)
 
         elif signal.signal_type == SignalType.HOLD:
             return None
@@ -303,6 +309,8 @@ class StrategyManager:
                 quantity=quantity,
                 order_type=OrderType.MARKET,
                 price=price,
+                stop_loss=signal.stop_loss if side == OrderSide.BUY else None,
+                take_profit=signal.take_profit if side == OrderSide.BUY else None,
                 broker="strategy_manager",
             )
             # Validate against risk limits
@@ -315,6 +323,19 @@ class StrategyManager:
 
             self.portfolio.execute_order(order, price, quantity)
             self._all_orders.append(order)
+
+            # Register SL/TP tracking after a successful BUY
+            if side == OrderSide.BUY and (signal.stop_loss or signal.take_profit):
+                self._stop_levels[asset] = {
+                    "stop_loss": signal.stop_loss,
+                    "take_profit": signal.take_profit,
+                    "instance_id": record.instance_id,
+                }
+                logger.info(
+                    f"[{record.instance_id}] SL/TP registered for {asset.symbol}: "
+                    f"SL={signal.stop_loss}, TP={signal.take_profit}"
+                )
+
             logger.info(
                 f"[{record.instance_id}] Executed {side.value} {quantity:.4f} "
                 f"{asset.symbol} @ ${price:.4f}"
@@ -358,6 +379,60 @@ class StrategyManager:
             qty = self.default_order_quantity
 
         return max(round(qty, 8), 0.0)
+
+    def _check_stop_levels(self, current_prices: Dict[Asset, float]) -> List[Order]:
+        """
+        Evaluate all tracked stop-loss / take-profit levels against current prices.
+        Automatically closes any position whose SL or TP has been breached.
+        Returns the list of close orders that were placed.
+        """
+        triggered_orders: List[Order] = []
+
+        for asset, levels in list(self._stop_levels.items()):
+            price = current_prices.get(asset)
+            if price is None:
+                continue
+
+            position = self.portfolio.get_position(asset)
+            if position is None or position.quantity <= 0:
+                # Position already gone — remove stale tracking entry
+                self._stop_levels.pop(asset, None)
+                continue
+
+            sl = levels.get("stop_loss")
+            tp = levels.get("take_profit")
+            trigger_reason: Optional[str] = None
+
+            if sl is not None and price <= sl:
+                trigger_reason = f"stop-loss hit ({price:.4f} <= {sl:.4f})"
+            elif tp is not None and price >= tp:
+                trigger_reason = f"take-profit hit ({price:.4f} >= {tp:.4f})"
+
+            if trigger_reason:
+                instance_id = levels.get("instance_id", "stop_tracker")
+                logger.info(
+                    f"[{instance_id}] {asset.symbol} — {trigger_reason}. "
+                    f"Closing {position.quantity:.4f} @ {price:.4f}."
+                )
+                try:
+                    order = self.portfolio.create_order(
+                        asset=asset,
+                        side=OrderSide.SELL,
+                        quantity=abs(position.quantity),
+                        order_type=OrderType.MARKET,
+                        price=price,
+                        broker="stop_tracker",
+                    )
+                    self.portfolio.execute_order(order, price, abs(position.quantity))
+                    self._all_orders.append(order)
+                    self._stop_levels.pop(asset, None)
+                    triggered_orders.append(order)
+                except Exception as exc:
+                    logger.error(
+                        f"[stop_tracker] Failed to close {asset.symbol} on {trigger_reason}: {exc}"
+                    )
+
+        return triggered_orders
 
     # ------------------------------------------------------------------
     # Capital allocation
@@ -430,6 +505,8 @@ class StrategyManager:
                 "signal": sig.signal_type.value,
                 "strength": round(sig.strength, 4),
                 "price": round(sig.price, 4),
+                "stop_loss": sig.stop_loss,
+                "take_profit": sig.take_profit,
                 "metadata": sig.metadata,
             }
             for ts, sig in reversed(self._all_signals[-limit:])
@@ -441,6 +518,18 @@ class StrategyManager:
             iid: list(record.strategy.assets)
             for iid, record in self._records.items()
         }
+
+    def get_stop_levels(self) -> List[Dict]:
+        """Return all currently active stop-loss / take-profit levels."""
+        return [
+            {
+                "symbol": asset.symbol,
+                "stop_loss": levels.get("stop_loss"),
+                "take_profit": levels.get("take_profit"),
+                "instance_id": levels.get("instance_id"),
+            }
+            for asset, levels in self._stop_levels.items()
+        ]
 
     # ------------------------------------------------------------------
     # Internal helpers
